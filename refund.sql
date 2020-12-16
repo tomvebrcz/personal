@@ -1,24 +1,31 @@
-/* This procedure is looking for returned payouts with reference number, name and bank account in Ledger, CSV and MT940 statements. Also looking for LHV returned payouts which have different reference number.*/
+/* PROCEDURE: This procedure is looking for returned payouts with reference number, name and bank account in Ledger, CSV and MT940 statements. Also looking for LHV and CITI returned payouts which have different reference number.*/
 
 --EXAMPLES: 3855645276,4224908393,3704506155,2029808911,3798653319(only ledger atm)
 
-\prompt 'Enter BankWithdrawalID to find a returned payment: ' bankwithdrawalid
+\prompt '\nEnter BankWithdrawalID to find a returned payment: ' bankwithdrawalid
+\prompt 'Enter Date Range (x days): ' daterange
+
 
 \set QUIET ON
 
-\pset expanded ON
+--For better readability \pset expanded ON. It is set back to AUTO at the end!
+\pset expanded ON 
+\timing OFF
 
 \echo '\n*******************'
 \echo '*    STATEMENT    *'
 \echo '*******************\n'
 
 WITH tmp AS (
-
    -- Add new case for each bank which generate new bankreferencenumber (CSV statement)
    SELECT
       CASE
-         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB%' THEN (
+         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB' AND balancedate < '2020-10-15' THEN (
             RIGHT(SUBSTRING(array_to_string(textcolumns,','), (POSITION('AcctSvcrRef:' in array_to_string(textcolumns,','))), 31),9)
+         )
+         -- LHV changed their format on '2020-10-15'
+         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB' AND balancedate >= '2020-10-15' THEN (
+            RIGHT(SUBSTRING(array_to_string(textcolumns,','),POSITION('InstrId:' in array_to_string(textcolumns,',')),19),10)
          )
          ELSE NULL
       END AS "bankreferencenumber"
@@ -26,21 +33,25 @@ WITH tmp AS (
       ledger.view_all_rows
    WHERE
       reference = :'bankwithdrawalid'
+      AND amount < 0
 
    UNION
-
    -- Add new case for each bank which generate new bankreferencenumber (MT940  statement)
    SELECT
       CASE
-         WHEN ecosysaccount ilike 'CLIENT_FUNDS_UNITED_KINGDOM_CITI%' THEN (
-            SUBSTRING(array_to_string(textcolumns,','),(POSITION('NMSC' in array_to_string(textcolumns,','))+4),(POSITION('//' in array_to_string(textcolumns,','))-POSITION('NMSC' in array_to_string(textcolumns,','))-4))
-         )
+         WHEN ecosysaccount ilike ('%CLIENT_FUNDS_UNITED_KINGDOM_CITI%')
+            THEN
+               CASE
+                  WHEN (POSITION('NMSC' in array_to_string(textcolumns,','))) = 0 THEN (SUBSTRING(array_to_string(textcolumns,','),(POSITION('NTRF' in array_to_string(textcolumns,','))+4),10))
+                  ELSE (SUBSTRING(array_to_string(textcolumns,','),(POSITION('NMSC' in array_to_string(textcolumns,','))+4),(POSITION('//' in array_to_string(textcolumns,','))-POSITION('NMSC' in array_to_string(textcolumns,','))-4)))
+               END
          ELSE NULL
       END AS "bankreferencenumber"
    FROM
       mt94xparser.View_All_Rows
    WHERE
       reference = :'bankwithdrawalid'
+      AND amount < 0
 ),
 cte AS (
    SELECT
@@ -71,13 +82,14 @@ SELECT
   currency,
   amount,
   balancedate,
+  datecolumn1 AS "valuedate",
   textcolumns,
   bankledgerid
 FROM
   ledger.view_all_rows
 WHERE
   ecosysAccount = ( SELECT "bank" FROM cte)
-  AND balanceDate BETWEEN ((SELECT "date" FROM cte)) AND ((SELECT "date" FROM cte) + '14 days'::INTERVAL)
+  AND balanceDate BETWEEN ((SELECT "date" FROM cte)) AND ((SELECT "date" FROM cte) + :'daterange'::INTERVAL)
   AND currency = (SELECT "currency" FROM cte)
   AND amount BETWEEN (SELECT "amountminusfee" FROM cte) AND (SELECT "amount" FROM cte)
   AND (
@@ -96,13 +108,14 @@ SELECT
   currency,
   amount,
   balancedate,
+  valuedate,
   textcolumns,
   bankledgerid
 FROM
   mt94xparser.View_All_Rows
 WHERE
    ecosysAccount = ( SELECT "bank" FROM cte)
-   AND balancedate BETWEEN ((SELECT "date" FROM cte)) AND ((SELECT "date" FROM cte) + '14 days'::INTERVAL)
+   AND valuedate BETWEEN ((SELECT "date" FROM cte)) AND ((SELECT "date" FROM cte) + :'daterange'::INTERVAL)
    AND currency = (SELECT "currency" FROM cte)
    AND amount BETWEEN (SELECT "amountminusfee" FROM cte) AND (SELECT "amount" FROM cte)
    AND (
@@ -117,12 +130,14 @@ WHERE
 \echo '*******************\n'
 
 WITH tmp AS (
-
-   -- Add new case when the bank generate new bankreferencenumber (CSV statement)
    SELECT
       CASE
-         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB%' THEN (
+         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB' AND balancedate < '2020-10-15' THEN (
             RIGHT(SUBSTRING(array_to_string(textcolumns,','), (POSITION('AcctSvcrRef:' in array_to_string(textcolumns,','))), 31),9)
+         )
+         -- LHV changed their format on '2020-10-15'
+         WHEN ecosysaccount ilike 'CLIENT_FUNDS_ESTONIA_LHVB' AND balancedate >= '2020-10-15' THEN (
+            RIGHT(SUBSTRING(array_to_string(textcolumns,','),POSITION('InstrId:' in array_to_string(textcolumns,',')),19),10)
          )
          ELSE NULL
       END AS "bankreferencenumber"
@@ -130,21 +145,25 @@ WITH tmp AS (
       ledger.view_all_rows
    WHERE
       reference = :'bankwithdrawalid'
+      AND amount < 0
 
    UNION
 
-   -- Add new case when the bank generate new bankreferencenumber (MT940  statement)
    SELECT
       CASE
-         WHEN ecosysaccount ilike 'CLIENT_FUNDS_UNITED_KINGDOM_CITI%' THEN (
-            SUBSTRING(array_to_string(textcolumns,','),(POSITION('NMSC' in array_to_string(textcolumns,','))+4),(POSITION('//' in array_to_string(textcolumns,','))-POSITION('NMSC' in array_to_string(textcolumns,','))-4))
-         )
+         WHEN ecosysaccount ilike ('%CLIENT_FUNDS_UNITED_KINGDOM_CITI%')
+            THEN
+               CASE
+                  WHEN (POSITION('NMSC' in array_to_string(textcolumns,','))) = 0 THEN (SUBSTRING(array_to_string(textcolumns,','),(POSITION('NTRF' in array_to_string(textcolumns,','))+4),10))
+                  ELSE (SUBSTRING(array_to_string(textcolumns,','),(POSITION('NMSC' in array_to_string(textcolumns,','))+4),(POSITION('//' in array_to_string(textcolumns,','))-POSITION('NMSC' in array_to_string(textcolumns,','))-4)))
+               END
          ELSE NULL
       END AS "bankreferencenumber"
    FROM
       mt94xparser.View_All_Rows
    WHERE
       reference = :'bankwithdrawalid'
+      AND amount < 0
 ),
 cte AS (
    SELECT
@@ -171,8 +190,8 @@ SELECT
 FROM
    view_bank_ledger
 WHERE
-   bankaccountid = (SELECT "bankaccountid" FROM cte)
-   AND date BETWEEN (SELECT "date" FROM cte) AND (SELECT "date" FROM cte) + '14 days'::INTERVAL
+   bankaccountid = (SELECT "bankaccountid" FROM cte) 
+   AND date BETWEEN (SELECT "date" FROM cte) AND (SELECT "date" FROM cte) + :'daterange'::INTERVAL
    AND currency = (SELECT "currency" FROM cte)
    AND amount BETWEEN (SELECT "amountminusfee" FROM cte) AND (SELECT "amount" FROM cte)
    AND (
@@ -207,17 +226,20 @@ WITH cte AS (
 )
 SELECT
    count(*) AS "POSSIBLE RETURNS",
-   'SELECT * FROM view_bank_ledger WHERE bankaccountid = ' || (SELECT "bankaccountid" FROM cte) || ' AND currency = ' || '''' || (SELECT "currency" FROM cte) || '''' || ' AND date BETWEEN ' || '''' || ((SELECT "date" FROM cte)) || '''' || ' AND ' || '''' || ((SELECT "date" FROM cte) + '14 days'::INTERVAL) || '''' || ' AND amount = ' || (SELECT "amount" FROM cte) || ' AND claimable;' AS "QUERY TO RUN"
+   'SELECT * FROM view_bank_ledger WHERE bankaccountid = ' || (SELECT "bankaccountid" FROM cte) || ' AND currency = ' || '''' || (SELECT "currency" FROM cte) || '''' || ' AND date BETWEEN ' || '''' || ((SELECT "date" FROM cte)) || '''' || ' AND ' || '''' || ((SELECT "date" FROM cte) + :'daterange'::INTERVAL) || '''' || ' AND amount = ' || (SELECT "amount" FROM cte) || ' AND claimable;' AS "QUERY TO RUN"
 FROM
    view_bank_ledger
 WHERE
    bankaccountid = (SELECT "bankaccountid" FROM cte)
-   AND date BETWEEN (SELECT "date" FROM cte) AND ((SELECT "date" FROM cte) + '14 days'::INTERVAL)
+   AND date BETWEEN (SELECT "date" FROM cte) AND ((SELECT "date" FROM cte) + :'daterange'::INTERVAL)
    AND currency = (SELECT "currency" FROM cte)
    AND amount = (SELECT "amount" FROM cte)
    AND claimable;
 
-\echo 'ALWAYS DOUBLE CHECK THE RESULT!'
+\echo 'ALWAYS DOUBLE CHECK THE RESULT!\n'
+
+\pset expanded AUTO
+\timing ON
 
 -- Inserts data of this execution in temp table. Copy this data into GoogleDrive. Copy from GoogleDrive ALL data back into another temp table for viewing.
 \t
